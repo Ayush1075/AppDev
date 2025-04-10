@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">SignIn</string>
+    <!-- Add this manually if needed (the value would be in your google-services.json) -->
+    <!-- <string name="default_web_client_id">YOUR_WEB_CLIENT_ID</string> -->
+</resources>
