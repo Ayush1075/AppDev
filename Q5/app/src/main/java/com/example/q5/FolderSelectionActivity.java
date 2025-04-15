@@ -1,7 +1,7 @@
 package com.example.q5;
 
-
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.view.View;
@@ -33,21 +33,22 @@ public class FolderSelectionActivity extends AppCompatActivity {
         listView = findViewById(R.id.listView);
         tvCurrentPath = findViewById(R.id.tvCurrentPath);
 
-        // Start with external storage directory
-        currentDirectory = Environment.getExternalStorageDirectory();
+        // Choose the appropriate directory to start with
+        setupInitialDirectory();
         displayFiles();
 
         listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
                 File selectedFile = files.get(position);
-                if (selectedFile.isDirectory()) {
+                if (selectedFile.isDirectory() && selectedFile.canRead()) {
                     // If directory, navigate into it
                     currentDirectory = selectedFile;
                     displayFiles();
-                } else {
-                    // If it's a file, ignore (we're only interested in folders)
-                    Toast.makeText(FolderSelectionActivity.this, "Please select a folder", Toast.LENGTH_SHORT).show();
+                } else if (!selectedFile.canRead()) {
+                    Toast.makeText(FolderSelectionActivity.this,
+                            "Cannot access this folder due to permission restrictions",
+                            Toast.LENGTH_SHORT).show();
                 }
             }
         });
@@ -57,16 +58,43 @@ public class FolderSelectionActivity extends AppCompatActivity {
             @Override
             public boolean onItemLongClick(AdapterView<?> parent, View view, int position, long id) {
                 File selectedFile = files.get(position);
-                if (selectedFile.isDirectory()) {
+                if (selectedFile.isDirectory() && selectedFile.canRead()) {
                     // Open GalleryActivity with the selected folder path
                     Intent intent = new Intent(FolderSelectionActivity.this, GalleryActivity.class);
                     intent.putExtra("folderPath", selectedFile.getAbsolutePath());
                     startActivity(intent);
                     return true;
+                } else if (!selectedFile.canRead()) {
+                    Toast.makeText(FolderSelectionActivity.this,
+                            "Cannot access this folder due to permission restrictions",
+                            Toast.LENGTH_SHORT).show();
                 }
                 return false;
             }
         });
+    }
+
+    private void setupInitialDirectory() {
+        // On Android 10+ (API 29+), access to external storage is restricted
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Use app-specific directory
+            currentDirectory = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+            if (currentDirectory == null) {
+                currentDirectory = getFilesDir();
+            }
+        } else {
+            // Try external storage for lower API levels
+            File externalDir = Environment.getExternalStorageDirectory();
+            if (externalDir != null && externalDir.canRead()) {
+                currentDirectory = externalDir;
+            } else {
+                // Fallback to app-specific directory
+                currentDirectory = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+                if (currentDirectory == null) {
+                    currentDirectory = getFilesDir();
+                }
+            }
+        }
     }
 
     private void displayFiles() {
@@ -76,7 +104,7 @@ public class FolderSelectionActivity extends AppCompatActivity {
         tvCurrentPath.setText("Current Path: " + currentDirectory.getAbsolutePath());
 
         // Add parent directory option if not at root
-        if (currentDirectory.getParentFile() != null) {
+        if (currentDirectory.getParentFile() != null && currentDirectory.getParentFile().canRead()) {
             fileList.add("../");
             files.add(currentDirectory.getParentFile());
         }
@@ -85,11 +113,16 @@ public class FolderSelectionActivity extends AppCompatActivity {
         File[] fileArray = currentDirectory.listFiles();
         if (fileArray != null) {
             for (File file : fileArray) {
-                if (file.isDirectory()) {
+                if (file.isDirectory() && !file.isHidden()) {
                     fileList.add(file.getName() + "/");
                     files.add(file);
                 }
             }
+        }
+
+        if (fileList.isEmpty()) {
+            fileList.add("No accessible folders found");
+            Toast.makeText(this, "No accessible folders in this location", Toast.LENGTH_SHORT).show();
         }
 
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
@@ -99,7 +132,7 @@ public class FolderSelectionActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        if (currentDirectory.getParentFile() != null) {
+        if (currentDirectory.getParentFile() != null && currentDirectory.getParentFile().canRead()) {
             currentDirectory = currentDirectory.getParentFile();
             displayFiles();
         } else {

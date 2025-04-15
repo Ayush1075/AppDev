@@ -1,9 +1,11 @@
 package com.example.q5;
 
+import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -19,6 +21,7 @@ import androidx.core.content.FileProvider;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -61,7 +64,7 @@ public class CameraActivity extends AppCompatActivity {
             try {
                 photoFile = createImageFile();
             } catch (IOException ex) {
-                Toast.makeText(this, "Error creating image file", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Error creating image file: " + ex.getMessage(), Toast.LENGTH_SHORT).show();
             }
 
             if (photoFile != null) {
@@ -82,6 +85,9 @@ public class CameraActivity extends AppCompatActivity {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         String imageFileName = "JPEG_" + timeStamp + "_";
         File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        if (!storageDir.exists()) {
+            storageDir.mkdirs();
+        }
         File image = File.createTempFile(imageFileName, ".jpg", storageDir);
         currentPhotoPath = image.getAbsolutePath();
         return image;
@@ -104,29 +110,38 @@ public class CameraActivity extends AppCompatActivity {
 
     private void displayCapturedPhoto() {
         if (currentPhotoPath != null) {
-            Bitmap bitmap = BitmapFactory.decodeFile(currentPhotoPath);
-            imagePreview.setImageBitmap(bitmap);
-            tvPhotoPath.setText("Photo saved at: " + currentPhotoPath);
-            if (targetFolder != null) {
-                btnSavePhoto.setEnabled(true);
+            // Set options to reduce memory usage
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 4; // Reduce image size by factor of 4
+
+            Bitmap bitmap = BitmapFactory.decodeFile(currentPhotoPath, options);
+            if (bitmap != null) {
+                imagePreview.setImageBitmap(bitmap);
+                tvPhotoPath.setText("Photo saved at: " + currentPhotoPath);
+                if (targetFolder != null) {
+                    btnSavePhoto.setEnabled(true);
+                }
+            } else {
+                Toast.makeText(this, "Failed to load the captured image", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
     private void handleSelectedFolder(Uri folderUri) {
         try {
-            // Use folderUri directly or convert to a File if needed; here we use a simplified approach.
-            File folder = new File(folderUri.getPath());
-            if (!folder.exists()) {
-                folder.mkdirs();
-            }
-            targetFolder = folder;
-            Toast.makeText(this, "Folder selected: " + folder.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            // Take persistable permission for the folder
+            int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+            getContentResolver().takePersistableUriPermission(folderUri, takeFlags);
+
+            // Store the URI for later use
+            targetFolder = new File(folderUri.toString());
+            Toast.makeText(this, "Folder selected: " + folderUri.toString(), Toast.LENGTH_LONG).show();
+
             if (currentPhotoPath != null) {
                 btnSavePhoto.setEnabled(true);
             }
         } catch (Exception e) {
-            Toast.makeText(this, "Error selecting folder", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Error selecting folder: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -137,24 +152,13 @@ public class CameraActivity extends AppCompatActivity {
         }
 
         try {
-            File sourceFile = new File(currentPhotoPath);
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-            File destFile = new File(targetFolder, "Photo_" + timeStamp + ".jpg");
-
-            // Copy the file by compressing the bitmap
-            Bitmap bitmap = BitmapFactory.decodeFile(currentPhotoPath);
-            FileOutputStream out = new FileOutputStream(destFile);
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
-            out.flush();
-            out.close();
-
-            Toast.makeText(this, "Photo saved to: " + destFile.getAbsolutePath(), Toast.LENGTH_LONG).show();
-
-            // Update gallery by broadcasting a media scan intent
-            Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-            Uri contentUri = Uri.fromFile(destFile);
-            mediaScanIntent.setData(contentUri);
-            sendBroadcast(mediaScanIntent);
+            // For Android 10+ (API 29+), use MediaStore
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveImageUsingMediaStore();
+            } else {
+                // For older versions, directly save to the file system
+                saveImageToFileSystem();
+            }
 
             // Reset UI
             btnSavePhoto.setEnabled(false);
@@ -165,5 +169,55 @@ public class CameraActivity extends AppCompatActivity {
         } catch (Exception e) {
             Toast.makeText(this, "Error saving photo: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void saveImageUsingMediaStore() throws IOException {
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        String fileName = "Photo_" + timeStamp + ".jpg";
+
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/CameraApp");
+
+        Uri imageUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        if (imageUri != null) {
+            try (OutputStream out = getContentResolver().openOutputStream(imageUri)) {
+                // Compress and save the bitmap
+                Bitmap bitmap = BitmapFactory.decodeFile(currentPhotoPath);
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
+
+                Toast.makeText(this, "Photo saved to gallery", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void saveImageToFileSystem() throws IOException {
+        File sourceFile = new File(currentPhotoPath);
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+
+        // Create a Pictures directory if using a content:// URI
+        File picturesDir = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_PICTURES), "CameraApp");
+        if (!picturesDir.exists()) {
+            picturesDir.mkdirs();
+        }
+
+        File destFile = new File(picturesDir, "Photo_" + timeStamp + ".jpg");
+
+        // Copy the file by compressing the bitmap
+        Bitmap bitmap = BitmapFactory.decodeFile(currentPhotoPath);
+        FileOutputStream out = new FileOutputStream(destFile);
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out);
+        out.flush();
+        out.close();
+
+        Toast.makeText(this, "Photo saved to: " + destFile.getAbsolutePath(), Toast.LENGTH_LONG).show();
+
+        // Update gallery by broadcasting a media scan intent
+        Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+        Uri contentUri = Uri.fromFile(destFile);
+        mediaScanIntent.setData(contentUri);
+        sendBroadcast(mediaScanIntent);
     }
 }
